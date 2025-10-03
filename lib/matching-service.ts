@@ -291,7 +291,11 @@ export class MatchingService {
           room_type: 'anonymous',
           is_active: true,
           max_participants: 2,
-          created_by: createdBy
+          created_by: createdBy,
+          user_id_1: user1Id || null,
+          user_id_2: user2Id || null,
+          guest_id_1: guest1Id || null,
+          guest_id_2: guest2Id || null
         }])
         .select()
         .single()
@@ -327,6 +331,30 @@ export class MatchingService {
     } catch (error) {
       console.error('Error in getActiveMatch:', error)
       return null
+    }
+  }
+
+  static async closeChatRoom(
+    roomId: string,
+    userId?: string,
+    guestUserId?: string
+  ): Promise<boolean> {
+    try {
+      const { data, error } = await supabase.rpc('close_chat_room', {
+        p_room_id: roomId,
+        p_closed_by_user_id: userId || null,
+        p_closed_by_guest_id: guestUserId || null
+      })
+
+      if (error) {
+        console.error('Error closing chat room:', error)
+        return false
+      }
+
+      return data || false
+    } catch (error) {
+      console.error('Error in closeChatRoom:', error)
+      return false
     }
   }
 

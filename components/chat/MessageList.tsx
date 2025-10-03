@@ -46,7 +46,7 @@ export default function MessageList({ messages, currentUserId, currentGuestId }:
 
   return (
     <ScrollArea className="flex-1 p-4" ref={scrollRef}>
-      <div className="space-y-4">
+      <div className="flex flex-col space-y-4 min-h-full justify-end">
         {messages.map((message) => {
           const isOwn = isOwnMessage(message)
 

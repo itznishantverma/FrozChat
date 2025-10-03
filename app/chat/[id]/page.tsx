@@ -91,7 +91,90 @@ export default function ChatPage() {
         return
       }
 
-      setPartnerUser({ username: 'Chat Partner' })
+      if (room.closed_at || !room.is_active) {
+        setError('This chat room has been closed')
+        setTimeout(() => {
+          router.push('/chat/new')
+        }, 2000)
+        setLoading(false)
+        return
+      }
+
+      let partner: any = null
+      const isUserAuth = user.type === 'authenticated'
+      const currentUserId = isUserAuth ? user.id : null
+      const currentGuestId = !isUserAuth ? user.id : null
+
+      console.log('Room data:', room)
+      console.log('Current user:', { isUserAuth, currentUserId, currentGuestId })
+
+      // Verify user is a participant in this room
+      const isParticipant = (
+        (currentUserId && (room.user_id_1 === currentUserId || room.user_id_2 === currentUserId)) ||
+        (currentGuestId && (room.guest_id_1 === currentGuestId || room.guest_id_2 === currentGuestId))
+      )
+
+      if (!isParticipant) {
+        setError('You are not authorized to access this chat room')
+        setTimeout(() => {
+          router.push('/chat/new')
+        }, 2000)
+        setLoading(false)
+        return
+      }
+
+      if (room.user_id_1 && room.user_id_1 !== currentUserId) {
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', room.user_id_1)
+          .maybeSingle()
+
+        console.log('Fetched user_id_1 profile (all fields):', profile, profileError)
+        partner = profile ? {
+          username: profile.username,
+          display_name: profile.display_name || profile.username
+        } : null
+      } else if (room.user_id_2 && room.user_id_2 !== currentUserId) {
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', room.user_id_2)
+          .maybeSingle()
+
+        console.log('Fetched user_id_2 profile (all fields):', profile, profileError)
+        partner = profile ? {
+          username: profile.username,
+          display_name: profile.display_name || profile.username
+        } : null
+      } else if (room.guest_id_1 && room.guest_id_1 !== currentGuestId) {
+        const { data: guestProfile, error: guestError } = await supabase
+          .from('guest_users')
+          .select('*')
+          .eq('id', room.guest_id_1)
+          .maybeSingle()
+
+        console.log('Fetched guest_id_1 (all fields):', guestProfile, guestError)
+        partner = guestProfile ? {
+          username: guestProfile.username,
+          display_name: guestProfile.display_name || guestProfile.username
+        } : null
+      } else if (room.guest_id_2 && room.guest_id_2 !== currentGuestId) {
+        const { data: guestProfile, error: guestError } = await supabase
+          .from('guest_users')
+          .select('*')
+          .eq('id', room.guest_id_2)
+          .maybeSingle()
+
+        console.log('Fetched guest_id_2 (all fields):', guestProfile, guestError)
+        partner = guestProfile ? {
+          username: guestProfile.username,
+          display_name: guestProfile.display_name || guestProfile.username
+        } : null
+      }
+
+      console.log('Final partner user:', partner)
+      setPartnerUser(partner || { username: 'Anonymous User', display_name: 'Anonymous User' })
       setLoading(false)
     } catch (err) {
       console.error('Error loading chat:', err)
