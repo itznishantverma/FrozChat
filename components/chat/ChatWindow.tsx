@@ -26,6 +26,7 @@ interface Message {
     content: string
     senderUsername?: string
   }
+  status?: 'sending' | 'sent'
 }
 
 interface ChatWindowProps {
@@ -45,6 +46,7 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
   const [escPressCount, setEscPressCount] = useState(0)
   const [replyingTo, setReplyingTo] = useState<Message | null>(null)
   const [editingMessage, setEditingMessage] = useState<{ id: string; content: string } | null>(null)
+  const [justSentMessageIds, setJustSentMessageIds] = useState<Set<string>>(new Set())
   const router = useRouter()
   const roomChannelRef = useRef<any>(null)
   const matchCheckInterval = useRef<any>(null)
@@ -446,7 +448,8 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
       guest_sender_id: currentUser.type === 'anonymous' ? currentUser.id : undefined,
       created_at: new Date().toISOString(),
       senderUsername: currentUser.username,
-      reply_to_id: replyToId
+      reply_to_id: replyToId,
+      status: 'sending'
     }
 
     if (replyToId) {
@@ -515,6 +518,21 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
       console.log('[Message] Message sent successfully:', insertedMessage.id)
 
       const enrichedInsertedMessage = await enrichMessageWithReply(insertedMessage)
+      enrichedInsertedMessage.status = 'sent'
+
+      setJustSentMessageIds(prev => {
+        const newSet = new Set(prev)
+        newSet.add(enrichedInsertedMessage.id)
+        return newSet
+      })
+
+      setTimeout(() => {
+        setJustSentMessageIds(prev => {
+          const newSet = new Set(prev)
+          newSet.delete(enrichedInsertedMessage.id)
+          return newSet
+        })
+      }, 3000)
 
       setMessages(prev => {
         const filtered = prev.filter(msg => msg.id !== tempId)
@@ -760,7 +778,7 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
 
   return (
     <div className="h-screen overflow-hidden bg-gradient-to-br from-cyan-50 via-blue-50 to-slate-100 flex flex-col">
-      <div className="flex items-center justify-between px-6 py-4 border-b border-cyan-200 bg-white/80 backdrop-blur-sm">
+      <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-cyan-200 bg-white/80 backdrop-blur-sm">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-gradient-to-br from-cyan-500 to-blue-500 rounded-full flex items-center justify-center">
@@ -787,6 +805,7 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
           onReply={handleReply}
           onEdit={handleEdit}
           onReport={handleReportMessage}
+          justSentMessageIds={justSentMessageIds}
         />
         {!roomClosed && (
           <MessageInput

@@ -2,8 +2,8 @@
 
 import { useState, KeyboardEvent, useRef, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Send, Loader as Loader2, X } from 'lucide-react'
+import { Textarea } from '@/components/ui/textarea'
+import { Send, X } from 'lucide-react'
 
 interface ReplyingTo {
   id: string
@@ -43,8 +43,7 @@ export default function MessageInput({
 }: MessageInputProps) {
   const [message, setMessage] = useState('')
   const [sending, setSending] = useState(false)
-  const [showSentIndicator, setShowSentIndicator] = useState(false)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const skipButtonRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
@@ -71,8 +70,11 @@ export default function MessageInput({
   useEffect(() => {
     if (replyingTo) {
       setTimeout(() => {
-        inputRef.current?.focus()
-        inputRef.current?.select()
+        if (inputRef.current) {
+          inputRef.current.focus()
+          const length = inputRef.current.value.length
+          inputRef.current.setSelectionRange(length, length)
+        }
       }, 0)
     }
   }, [replyingTo])
@@ -82,6 +84,10 @@ export default function MessageInput({
 
     const messageToSend = message.trim()
     setMessage('')
+
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto'
+    }
 
     setTimeout(() => {
       if (inputRef.current) {
@@ -98,8 +104,6 @@ export default function MessageInput({
         }
       } else {
         await onSendMessage(messageToSend, replyingTo?.id)
-        setShowSentIndicator(true)
-        setTimeout(() => setShowSentIndicator(false), 1500)
         if (onCancelReply) {
           onCancelReply()
         }
@@ -111,8 +115,8 @@ export default function MessageInput({
     }
   }
 
-  const handleKeyPress = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
+  const handleKeyPress = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
     } else if (e.key === 'Escape') {
@@ -135,11 +139,6 @@ export default function MessageInput({
 
   return (
     <div className="border-t border-cyan-200 bg-white relative">
-      {showSentIndicator && (
-        <div className="absolute top-0 left-1/2 transform -translate-x-1/2 -translate-y-full mb-2 bg-green-600 text-white text-xs px-3 py-1.5 rounded-full shadow-lg animate-fade-in-out">
-          Message sent
-        </div>
-      )}
       {(replyingTo || editingMessage) && (
         <div className="px-3 pt-2 pb-1 bg-slate-50 border-b border-slate-200">
           <div className="flex items-start justify-between gap-2">
@@ -164,7 +163,7 @@ export default function MessageInput({
       )}
 
       <div className="p-3">
-        <div className="flex gap-2 items-center">
+        <div className="flex gap-2 items-start">
           <Button
             ref={skipButtonRef}
             data-skip-button
@@ -172,37 +171,44 @@ export default function MessageInput({
             disabled={disabled}
             variant={skipConfirmMode ? "destructive" : "outline"}
             className={skipConfirmMode
-              ? "bg-red-600 hover:bg-red-700 text-white h-9 px-4 font-medium"
-              : "border-red-300 text-red-600 hover:bg-red-50 hover:text-red-700 hover:border-red-400 h-9 px-4"
+              ? "bg-red-600 hover:bg-red-700 text-white h-9 px-4 font-medium flex-shrink-0"
+              : "border-red-300 text-red-600 hover:bg-red-50 hover:text-red-700 hover:border-red-400 h-9 px-4 flex-shrink-0"
             }
             title={skipConfirmMode ? "Click again to confirm skip" : "Skip and find new chat partner"}
           >
             {skipConfirmMode ? "Confirm?" : "Skip"}
           </Button>
-          <Input
+          <Textarea
             ref={inputRef}
             value={message}
             onChange={(e) => setMessage(e.target.value)}
-            onKeyPress={handleKeyPress}
+            onKeyDown={handleKeyPress}
             placeholder={
               editingMessage
-                ? "Edit your message... (Press Enter to save, ESC to cancel)"
-                : "Type your message... (Press Enter to send, ESC to cancel)"
+                ? "Edit your message... (Press Enter to save, Shift+Enter for new line, ESC to cancel)"
+                : "Type your message... (Press Enter to send, Shift+Enter for new line, ESC to cancel)"
             }
-            className="flex-1 h-9"
+            className="flex-1 min-h-[36px] max-h-[120px] resize-none py-2"
             maxLength={2000}
             disabled={disabled}
+            rows={1}
+            style={{
+              height: 'auto'
+            }}
+            onInput={(e) => {
+              const target = e.target as HTMLTextAreaElement
+              target.style.height = 'auto'
+              const newHeight = Math.min(target.scrollHeight, 120)
+              target.style.height = newHeight + 'px'
+              target.style.overflowY = target.scrollHeight > 120 ? 'auto' : 'hidden'
+            }}
           />
           <Button
             onClick={handleSend}
-            disabled={!message.trim() || disabled}
-            className="bg-cyan-600 hover:bg-cyan-700 h-9 px-4"
+            disabled={!message.trim() || disabled || sending}
+            className="bg-cyan-600 hover:bg-cyan-700 h-9 px-4 flex-shrink-0"
           >
-            {sending ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Send className="h-4 w-4" />
-            )}
+            <Send className="h-4 w-4" />
           </Button>
         </div>
         <p className="text-xs text-slate-500 mt-1.5">

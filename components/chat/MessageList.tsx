@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { format } from 'date-fns'
-import { Reply, CreditCard as Edit, Flag, MoveVertical as MoreVertical } from 'lucide-react'
+import { Reply, CreditCard as Edit, Flag, MoveVertical as MoreVertical, Check, Loader as Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -37,6 +37,7 @@ interface Message {
     content: string
     senderUsername?: string
   }
+  status?: 'sending' | 'sent'
 }
 
 interface MessageListProps {
@@ -46,6 +47,7 @@ interface MessageListProps {
   onReply?: (message: Message) => void
   onEdit?: (message: Message) => void
   onReport?: (messageId: string, reason: string) => void
+  justSentMessageIds?: Set<string>
 }
 
 export default function MessageList({
@@ -54,7 +56,8 @@ export default function MessageList({
   currentGuestId,
   onReply,
   onEdit,
-  onReport
+  onReport,
+  justSentMessageIds
 }: MessageListProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -211,10 +214,15 @@ export default function MessageList({
             return (
               <div
                 key={message.id}
-                className={`flex ${isOwn ? 'justify-end' : 'justify-start'} group relative`}
+                className={`flex ${isOwn ? 'justify-end' : 'justify-start'} group relative select-none`}
                 onTouchStart={(e) => onTouchStart(e, message)}
                 onTouchMove={(e) => onTouchMove(e, message)}
                 onTouchEnd={() => onTouchEnd(message)}
+                style={{
+                  WebkitTouchCallout: 'none',
+                  WebkitUserSelect: 'none',
+                  userSelect: 'none'
+                }}
               >
                 <div
                   className="flex items-start gap-2 max-w-[85%] transition-transform duration-75"
@@ -269,7 +277,7 @@ export default function MessageList({
                   )}
 
                   <div
-                    className={`rounded-lg px-4 py-2 ${
+                    className={`rounded-lg px-4 py-2 max-w-full ${
                       isOwn
                         ? 'bg-cyan-600 text-white'
                         : 'bg-slate-100 text-slate-800'
@@ -286,13 +294,13 @@ export default function MessageList({
                         <p className={`text-xs ${isOwn ? 'text-cyan-200' : 'text-slate-500'}`}>
                           {message.replied_message.senderUsername || 'Someone'}
                         </p>
-                        <p className={`text-xs ${isOwn ? 'text-cyan-100' : 'text-slate-600'} truncate max-w-[250px]`}>
+                        <p className={`text-xs ${isOwn ? 'text-cyan-100' : 'text-slate-600'} break-words`}>
                           {message.replied_message.content}
                         </p>
                       </div>
                     )}
 
-                    <p className="text-sm whitespace-pre-wrap break-words">
+                    <p className="text-sm whitespace-pre-wrap break-words overflow-wrap-anywhere">
                       {message.content}
                     </p>
 
@@ -311,6 +319,15 @@ export default function MessageList({
                           }`}
                         >
                           (edited)
+                        </span>
+                      )}
+                      {isOwn && (
+                        <span className="ml-1">
+                          {message.status === 'sending' ? (
+                            <Loader2 className="h-3 w-3 text-cyan-200 animate-spin" />
+                          ) : justSentMessageIds?.has(message.id) ? (
+                            <Check className="h-3 w-3 text-cyan-200" />
+                          ) : null}
                         </span>
                       )}
                     </div>
