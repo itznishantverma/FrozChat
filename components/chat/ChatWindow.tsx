@@ -18,6 +18,14 @@ interface Message {
   guest_sender_id?: string
   created_at: string
   senderUsername?: string
+  is_edited?: boolean
+  edited_at?: string
+  reply_to_id?: string
+  replied_message?: {
+    id: string
+    content: string
+    senderUsername?: string
+  }
 }
 
 interface ChatWindowProps {
@@ -35,15 +43,36 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
   const [searching, setSearching] = useState(false)
   const [showSkipConfirm, setShowSkipConfirm] = useState(false)
   const [escPressCount, setEscPressCount] = useState(0)
+  const [replyingTo, setReplyingTo] = useState<Message | null>(null)
+  const [editingMessage, setEditingMessage] = useState<{ id: string; content: string } | null>(null)
   const router = useRouter()
   const roomChannelRef = useRef<any>(null)
   const matchCheckInterval = useRef<any>(null)
   const escTimeoutRef = useRef<any>(null)
+  const roomStatusCheckInterval = useRef<any>(null)
+  const lastMessageCheckRef = useRef<string | null>(null)
+  const messagePollingInterval = useRef<any>(null)
 
   useEffect(() => {
     checkRoomStatus()
     loadMessages()
     setupRealtimeSubscription()
+
+    // Fallback: Poll for room status every 10 seconds
+    // This ensures we detect closure even if realtime fails
+    roomStatusCheckInterval.current = setInterval(() => {
+      if (!roomClosed) {
+        checkRoomStatus()
+      }
+    }, 10000)
+
+    // Fallback: Poll for new messages every 5 seconds
+    // This ensures we get messages even if realtime fails
+    messagePollingInterval.current = setInterval(() => {
+      if (!roomClosed) {
+        checkForNewMessages()
+      }
+    }, 5000)
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -106,6 +135,12 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
       if (escTimeoutRef.current) {
         clearTimeout(escTimeoutRef.current)
       }
+      if (roomStatusCheckInterval.current) {
+        clearInterval(roomStatusCheckInterval.current)
+      }
+      if (messagePollingInterval.current) {
+        clearInterval(messagePollingInterval.current)
+      }
     }
   }, [roomId, showSkipConfirm, roomClosed, searching])
 
@@ -140,15 +175,23 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
 
   const setupRealtimeSubscription = () => {
     if (roomChannelRef.current) {
-      console.log('Removing existing channel before creating new one')
+      console.log('[Realtime] Removing existing channel before creating new one')
       supabase.removeChannel(roomChannelRef.current)
       roomChannelRef.current = null
     }
 
-    console.log('Setting up realtime subscription for room:', roomId)
+    console.log('[Realtime] Setting up realtime subscription for room:', roomId)
+
+    const channelName = `room:${roomId}`
+    console.log('[Realtime] Channel name:', channelName)
 
     const channel = supabase
-      .channel(`room:${roomId}:${Date.now()}`)
+      .channel(channelName, {
+        config: {
+          broadcast: { self: false },
+          presence: { key: '' },
+        },
+      })
       .on(
         'postgres_changes',
         {
@@ -157,18 +200,52 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
           table: 'messages',
           filter: `chat_room_id=eq.${roomId}`
         },
-        (payload) => {
-          console.log('New message received via realtime:', payload)
+        async (payload) => {
+          console.log('[Realtime] New message INSERT event received:', payload)
           const newMessage = payload.new as Message
+
+          if (!newMessage || !newMessage.id) {
+            console.warn('[Realtime] Invalid message payload:', newMessage)
+            return
+          }
+
+          const enrichedMessage = await enrichMessageWithReply(newMessage)
+
           setMessages((prev) => {
-            const exists = prev.some(msg => msg.id === newMessage.id)
+            const exists = prev.some(msg => msg.id === enrichedMessage.id)
             if (exists) {
-              console.log('Message already exists, skipping')
+              console.log('[Realtime] Message already exists, skipping:', enrichedMessage.id)
               return prev
             }
-            console.log('Adding new message to list')
-            return [...prev, newMessage]
+            console.log('[Realtime] Adding new message to list:', enrichedMessage.id)
+            return [...prev, enrichedMessage]
           })
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'messages',
+          filter: `chat_room_id=eq.${roomId}`
+        },
+        async (payload) => {
+          console.log('[Realtime] Message UPDATE event received:', payload)
+          const updatedMessage = payload.new as Message
+
+          if (!updatedMessage || !updatedMessage.id) {
+            console.warn('[Realtime] Invalid message update payload:', updatedMessage)
+            return
+          }
+
+          const enrichedMessage = await enrichMessageWithReply(updatedMessage)
+
+          setMessages((prev) =>
+            prev.map(msg =>
+              msg.id === enrichedMessage.id ? enrichedMessage : msg
+            )
+          )
         }
       )
       .on(
@@ -180,10 +257,19 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
           filter: `id=eq.${roomId}`
         },
         (payload) => {
-          console.log('Room updated via realtime:', payload)
+          console.log('[Realtime] Room UPDATE event received:', payload)
           const updatedRoom = payload.new as any
-          if (updatedRoom && updatedRoom.closed_at) {
-            console.log('Room closed via realtime update')
+          const oldRoom = payload.old as any
+
+          console.log('[Realtime] Room update details:', {
+            closed_at: updatedRoom?.closed_at,
+            closed_by: updatedRoom?.closed_by,
+            is_active: updatedRoom?.is_active,
+            old_closed_at: oldRoom?.closed_at
+          })
+
+          if (updatedRoom && updatedRoom.closed_at && !oldRoom?.closed_at) {
+            console.log('[Realtime] Room was just closed, updating UI')
             setRoomClosed(true)
 
             const closedByIdentifier = updatedRoom.closed_by || ''
@@ -191,22 +277,87 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
               ? `user:${currentUser.id}`
               : `guest:${currentUser.id}`
 
-            setClosedByMe(closedByIdentifier === currentUserIdentifier)
+            const wasClosedByMe = closedByIdentifier === currentUserIdentifier
+            console.log('[Realtime] Closed by:', {
+              closedBy: closedByIdentifier,
+              currentUser: currentUserIdentifier,
+              wasClosedByMe
+            })
+
+            setClosedByMe(wasClosedByMe)
           }
         }
       )
-      .subscribe((status) => {
-        console.log('Realtime subscription status:', status)
+      .subscribe((status, err) => {
+        console.log('[Realtime] Subscription status:', status)
+        if (err) {
+          console.error('[Realtime] Subscription error:', err)
+        }
         if (status === 'SUBSCRIBED') {
-          console.log('Successfully subscribed to realtime updates')
+          console.log('[Realtime] ✓ Successfully subscribed to room updates')
+          console.log('[Realtime] Active channels:', supabase.getChannels().length)
         } else if (status === 'CHANNEL_ERROR') {
-          console.error('Realtime subscription error')
+          console.error('[Realtime] ✗ Subscription error - attempting reconnect')
+          // Auto-reconnect after 2 seconds
+          setTimeout(() => {
+            if (!roomClosed) {
+              console.log('[Realtime] Attempting to reconnect...')
+              setupRealtimeSubscription()
+            }
+          }, 2000)
         } else if (status === 'TIMED_OUT') {
-          console.error('Realtime subscription timed out')
+          console.error('[Realtime] ✗ Subscription timed out - attempting reconnect')
+          setTimeout(() => {
+            if (!roomClosed) {
+              console.log('[Realtime] Attempting to reconnect...')
+              setupRealtimeSubscription()
+            }
+          }, 2000)
+        } else if (status === 'CLOSED') {
+          console.log('[Realtime] Channel closed')
         }
       })
 
     roomChannelRef.current = channel
+  }
+
+  const enrichMessageWithReply = async (msg: any) => {
+    if (msg.reply_to_id) {
+      const { data: repliedMsg } = await supabase
+        .from('messages')
+        .select('id, content, sender_id, guest_sender_id')
+        .eq('id', msg.reply_to_id)
+        .maybeSingle()
+
+      if (repliedMsg) {
+        let username = 'Someone'
+        if (repliedMsg.sender_id) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('username')
+            .eq('user_id', repliedMsg.sender_id)
+            .maybeSingle()
+          username = profile?.username || 'Someone'
+        } else if (repliedMsg.guest_sender_id) {
+          const { data: guest } = await supabase
+            .from('guest_users')
+            .select('username')
+            .eq('id', repliedMsg.guest_sender_id)
+            .maybeSingle()
+          username = guest?.username || 'Someone'
+        }
+
+        return {
+          ...msg,
+          replied_message: {
+            id: repliedMsg.id,
+            content: repliedMsg.content,
+            senderUsername: username
+          }
+        }
+      }
+    }
+    return msg
   }
 
   const loadMessages = async () => {
@@ -219,7 +370,17 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
 
       if (error) throw error
 
-      setMessages(data || [])
+      const messages = data || []
+
+      const enrichedMessages = await Promise.all(
+        messages.map(msg => enrichMessageWithReply(msg))
+      )
+
+      setMessages(enrichedMessages)
+
+      if (enrichedMessages.length > 0) {
+        lastMessageCheckRef.current = enrichedMessages[enrichedMessages.length - 1].id
+      }
     } catch (err) {
       console.error('Error loading messages:', err)
       setError('Failed to load messages')
@@ -228,12 +389,55 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
     }
   }
 
-  const handleSendMessage = async (content: string) => {
+  const checkForNewMessages = async () => {
+    try {
+      // Get latest message ID from current state
+      const currentLastMessageId = lastMessageCheckRef.current
+
+      // Query for messages newer than the last one we have
+      let query = supabase
+        .from('messages')
+        .select('*')
+        .eq('chat_room_id', roomId)
+        .order('created_at', { ascending: true })
+
+      if (currentLastMessageId) {
+        query = query.gt('created_at', new Date(
+          messages.find(m => m.id === currentLastMessageId)?.created_at || 0
+        ).toISOString())
+      }
+
+      const { data, error } = await query.limit(50)
+
+      if (error) {
+        console.error('[Polling] Error checking for new messages:', error)
+        return
+      }
+
+      if (data && data.length > 0) {
+        console.log('[Polling] Found', data.length, 'new messages')
+        setMessages(prev => {
+          const newMessages = data.filter(newMsg =>
+            !prev.some(existingMsg => existingMsg.id === newMsg.id)
+          )
+          if (newMessages.length > 0) {
+            lastMessageCheckRef.current = newMessages[newMessages.length - 1].id
+            return [...prev, ...newMessages]
+          }
+          return prev
+        })
+      }
+    } catch (err) {
+      console.error('[Polling] Error in checkForNewMessages:', err)
+    }
+  }
+
+  const handleSendMessage = async (content: string, replyToId?: string) => {
     if (roomClosed) {
       throw new Error('Cannot send message to closed room')
     }
 
-    const tempId = `temp-${Date.now()}`
+    const tempId = `temp-${Date.now()}-${Math.random()}`
     const optimisticMessage: Message = {
       id: tempId,
       content,
@@ -241,9 +445,22 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
       sender_id: currentUser.type === 'authenticated' ? currentUser.id : undefined,
       guest_sender_id: currentUser.type === 'anonymous' ? currentUser.id : undefined,
       created_at: new Date().toISOString(),
-      senderUsername: currentUser.username
+      senderUsername: currentUser.username,
+      reply_to_id: replyToId
     }
 
+    if (replyToId) {
+      const repliedMsg = messages.find(m => m.id === replyToId)
+      if (repliedMsg) {
+        optimisticMessage.replied_message = {
+          id: repliedMsg.id,
+          content: repliedMsg.content,
+          senderUsername: repliedMsg.senderUsername || 'Someone'
+        }
+      }
+    }
+
+    console.log('[Message] Sending message:', { tempId, content: content.substring(0, 20) })
     setMessages(prev => [...prev, optimisticMessage])
 
     try {
@@ -269,7 +486,8 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
       const messageData: any = {
         chat_room_id: roomId,
         content,
-        message_type: 'text'
+        message_type: 'text',
+        reply_to_id: replyToId || null
       }
 
       if (currentUser.type === 'authenticated') {
@@ -285,6 +503,7 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
         .single()
 
       if (error) {
+        console.error('[Message] Insert error:', error)
         setMessages(prev => prev.filter(msg => msg.id !== tempId))
         if (error.message.includes('violates row-level security policy')) {
           setRoomClosed(true)
@@ -293,13 +512,115 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
         throw error
       }
 
-      setMessages(prev => prev.map(msg =>
-        msg.id === tempId ? { ...insertedMessage } : msg
-      ))
+      console.log('[Message] Message sent successfully:', insertedMessage.id)
+
+      const enrichedInsertedMessage = await enrichMessageWithReply(insertedMessage)
+
+      setMessages(prev => {
+        const filtered = prev.filter(msg => msg.id !== tempId)
+        const exists = filtered.some(msg => msg.id === enrichedInsertedMessage.id)
+        if (exists) {
+          console.log('[Message] Message already received via realtime')
+          return filtered
+        }
+        console.log('[Message] Adding confirmed message')
+        return [...filtered, enrichedInsertedMessage]
+      })
     } catch (err) {
-      console.error('Error sending message:', err)
+      console.error('[Message] Error sending message:', err)
       throw err
     }
+  }
+
+  const handleEditMessage = async (messageId: string, newContent: string) => {
+    try {
+      const messageToEdit = messages.find(m => m.id === messageId)
+      if (!messageToEdit) {
+        throw new Error('Message not found')
+      }
+
+      const isOwner = currentUser.type === 'authenticated'
+        ? messageToEdit.sender_id === currentUser.id
+        : messageToEdit.guest_sender_id === currentUser.id
+
+      if (!isOwner) {
+        throw new Error('You can only edit your own messages')
+      }
+
+      const { error } = await supabase
+        .from('messages')
+        .update({
+          content: newContent,
+          is_edited: true,
+          edited_at: new Date().toISOString()
+        })
+        .eq('id', messageId)
+
+      if (error) {
+        console.error('[Edit] Database error:', error)
+        throw error
+      }
+
+      console.log('[Edit] Message updated successfully')
+
+      setMessages(prev =>
+        prev.map(msg =>
+          msg.id === messageId
+            ? { ...msg, content: newContent, is_edited: true, edited_at: new Date().toISOString() }
+            : msg
+        )
+      )
+    } catch (err) {
+      console.error('Error editing message:', err)
+      throw err
+    }
+  }
+
+  const handleReportMessage = async (messageId: string, reason: string) => {
+    try {
+      const sessionId = currentUser.type === 'authenticated'
+        ? `user:${currentUser.id}`
+        : `guest:${currentUser.id}`
+
+      const { error } = await supabase
+        .from('message_reports')
+        .insert({
+          message_id: messageId,
+          reported_by_session_id: sessionId,
+          reason
+        })
+
+      if (error) {
+        if (error.message.includes('duplicate key')) {
+          console.log('Already reported this message')
+          return
+        }
+        throw error
+      }
+
+      console.log('Message reported successfully')
+    } catch (err) {
+      console.error('Error reporting message:', err)
+      throw err
+    }
+  }
+
+  const handleReply = (message: Message) => {
+    setReplyingTo(message)
+    setEditingMessage(null)
+  }
+
+  const handleEdit = (message: Message) => {
+    setEditingMessage({ id: message.id, content: message.content })
+    setReplyingTo(null)
+  }
+
+  const handleCancelReply = () => {
+    setReplyingTo(null)
+  }
+
+  const handleCancelEdit = () => {
+    setEditingMessage(null)
   }
 
   const handleLeaveChat = async () => {
@@ -463,13 +784,25 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
           messages={messages}
           currentUserId={currentUser.type === 'authenticated' ? currentUser.id : undefined}
           currentGuestId={currentUser.type === 'anonymous' ? currentUser.id : undefined}
+          onReply={handleReply}
+          onEdit={handleEdit}
+          onReport={handleReportMessage}
         />
         {!roomClosed && (
           <MessageInput
             onSendMessage={handleSendMessage}
+            onEditMessage={handleEditMessage}
             onSkip={handleLeaveChat}
             skipConfirmMode={showSkipConfirm}
             onSkipClick={() => setShowSkipConfirm(true)}
+            replyingTo={replyingTo ? {
+              id: replyingTo.id,
+              content: replyingTo.content,
+              senderUsername: replyingTo.senderUsername
+            } : null}
+            editingMessage={editingMessage}
+            onCancelReply={handleCancelReply}
+            onCancelEdit={handleCancelEdit}
           />
         )}
         {roomClosed && (

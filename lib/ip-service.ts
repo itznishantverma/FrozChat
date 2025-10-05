@@ -43,6 +43,8 @@ class IPService {
   private static instance: IPService
   private cache: Map<string, { data: IPDetails; timestamp: number }> = new Map()
   private cacheTimeout = 1000 * 60 * 60 * 24 // 24 hours
+  private lastRequestTime = 0
+  private minRequestInterval = 5000 // 5 seconds between requests
 
   private constructor() {}
 
@@ -58,108 +60,132 @@ class IPService {
       const cacheKey = 'current'
       const cached = this.cache.get(cacheKey)
 
+      // Return cached data if available
       if (cached && Date.now() - cached.timestamp < this.cacheTimeout) {
+        console.log('[IP Service] Using cached IP data')
         return cached.data
       }
 
-      // Try multiple APIs in sequence
+      // Rate limiting: prevent too frequent requests
+      const timeSinceLastRequest = Date.now() - this.lastRequestTime
+      if (timeSinceLastRequest < this.minRequestInterval) {
+        console.log('[IP Service] Rate limited, using cached or fallback data')
+        if (cached) {
+          return cached.data
+        }
+        return this.getFallbackData()
+      }
+
+      this.lastRequestTime = Date.now()
+
+      // Try multiple APIs in sequence with timeout
       const apis = [
-        this.fetchFromIPify,
-        this.fetchFromFreeGeoIP,
-        this.fetchFromIPAPI
+        { name: 'IPAPIis', fn: this.fetchFromIPAPIis.bind(this) },
+        { name: 'IPAPI', fn: this.fetchFromIPAPI.bind(this) },
+        { name: 'IPify', fn: this.fetchFromIPify.bind(this) }
       ]
 
       for (const api of apis) {
         try {
-          const result = await api()
+          console.log(`[IP Service] Trying ${api.name}...`)
+          const result = await Promise.race([
+            api.fn(),
+            new Promise<null>((_, reject) =>
+              setTimeout(() => reject(new Error('Timeout')), 5000)
+            )
+          ])
+
           if (result) {
+            console.log(`[IP Service] Success with ${api.name}`)
             this.cache.set(cacheKey, { data: result, timestamp: Date.now() })
             return result
           }
         } catch (error) {
-          console.warn(`IP API failed, trying next:`, error)
+          console.warn(`[IP Service] ${api.name} failed:`, error)
           continue
         }
       }
 
-      // Fallback with minimal data
-      return {
-        ip: 'Unknown',
-        country: 'Unknown',
-        countryCode: 'XX',
-        region: '',
-        regionName: '',
-        city: '',
-        zip: '',
-        lat: 0,
-        lon: 0,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
-        isp: 'Unknown',
-        org: 'Unknown',
-        as: '',
-        mobile: false,
-        proxy: false,
-        hosting: false
-      }
+      console.warn('[IP Service] All APIs failed, using fallback')
+      return this.getFallbackData()
     } catch (error) {
-      console.error('Error fetching IP details:', error)
-      return null
+      console.error('[IP Service] Error fetching IP details:', error)
+      return this.getFallbackData()
     }
   }
 
-  private async fetchFromIPify(): Promise<IPDetails | null> {
-    try {
-      // Get IP first
-      const ipResponse = await fetch('https://api.ipify.org?format=json')
-      const ipData = await ipResponse.json()
-
-      // Get location data
-      const locationResponse = await fetch(`https://ipapi.co/${ipData.ip}/json/`)
-      const data = await locationResponse.json()
-
-      if (data.ip) {
-        return {
-          ip: data.ip,
-          country: data.country_name || 'Unknown',
-          countryCode: data.country_code || 'XX',
-          region: data.region_code || '',
-          regionName: data.region || '',
-          city: data.city || '',
-          zip: data.postal || '',
-          lat: parseFloat(data.latitude) || 0,
-          lon: parseFloat(data.longitude) || 0,
-          timezone: data.timezone || 'UTC',
-          isp: data.org || 'Unknown',
-          org: data.org || 'Unknown',
-          as: data.asn || '',
-          mobile: false,
-          proxy: false,
-          hosting: false
-        }
-      }
-    } catch (error) {
-      console.warn('IPify API failed:', error)
+  private getFallbackData(): IPDetails {
+    return {
+      ip: 'Unknown',
+      country: 'Unknown',
+      countryCode: 'XX',
+      region: '',
+      regionName: '',
+      city: '',
+      zip: '',
+      lat: 0,
+      lon: 0,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+      isp: 'Unknown',
+      org: 'Unknown',
+      as: '',
+      mobile: false,
+      proxy: false,
+      hosting: false
     }
-    return null
   }
 
-  private async fetchFromFreeGeoIP(): Promise<IPDetails | null> {
+  private async fetchFromIPAPIis(): Promise<IPDetails | null> {
     try {
-      const response = await fetch('https://freegeoip.app/json/')
+      // ipapi.is has generous free tier: 1000 req/day with no rate limit
+      const response = await fetch('https://api.ipapi.is/')
       const data = await response.json()
 
       if (data.ip) {
         return {
           ip: data.ip,
-          country: data.country_name || 'Unknown',
-          countryCode: data.country_code || 'XX',
-          region: data.region_code || '',
-          regionName: data.region_name || '',
-          city: data.city || '',
-          zip: data.zip_code || '',
-          lat: parseFloat(data.latitude) || 0,
-          lon: parseFloat(data.longitude) || 0,
-          timezone: data.time_zone || 'UTC',
+          country: data.location?.country || 'Unknown',
+          countryCode: data.location?.country_code || 'XX',
+          region: data.location?.state_prov || '',
+          regionName: data.location?.state || '',
+          city: data.location?.city || '',
+          zip: data.location?.postal || '',
+          lat: parseFloat(data.location?.latitude) || 0,
+          lon: parseFloat(data.location?.longitude) || 0,
+          timezone: data.location?.timezone || 'UTC',
+          isp: data.company?.name || 'Unknown',
+          org: data.asn?.org || 'Unknown',
+          as: data.asn?.asn || '',
+          mobile: data.is_mobile || false,
+          proxy: data.is_proxy || false,
+          hosting: data.is_hosting || false
+        }
+      }
+    } catch (error) {
+      console.warn('[IP Service] IPAPIis failed:', error)
+    }
+    return null
+  }
+
+  private async fetchFromIPify(): Promise<IPDetails | null> {
+    try {
+      // Just get IP from ipify, don't use ipapi.co (has strict limits)
+      const ipResponse = await fetch('https://api.ipify.org?format=json')
+      const ipData = await ipResponse.json()
+
+      if (ipData.ip) {
+        // Return minimal data with just IP
+        return {
+          ip: ipData.ip,
+          country: 'Unknown',
+          countryCode: 'XX',
+          region: '',
+          regionName: '',
+          city: '',
+          zip: '',
+          lat: 0,
+          lon: 0,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
           isp: 'Unknown',
           org: 'Unknown',
           as: '',
@@ -169,15 +195,23 @@ class IPService {
         }
       }
     } catch (error) {
-      console.warn('FreeGeoIP API failed:', error)
+      console.warn('[IP Service] IPify failed:', error)
     }
     return null
   }
 
+
   private async fetchFromIPAPI(): Promise<IPDetails | null> {
     try {
+      // ipapi.co has strict limits: 1000/day, use as backup
       const response = await fetch('https://ipapi.co/json/')
       const data = await response.json()
+
+      // Check for rate limit error
+      if (data.error || data.reason) {
+        console.warn('[IP Service] IPAPI rate limited or error:', data)
+        return null
+      }
 
       if (data.ip) {
         return {
@@ -200,7 +234,7 @@ class IPService {
         }
       }
     } catch (error) {
-      console.warn('IPAPI failed:', error)
+      console.warn('[IP Service] IPAPI failed:', error)
     }
     return null
   }
