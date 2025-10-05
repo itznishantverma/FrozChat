@@ -53,6 +53,27 @@ export default function MessageInput({
   }, [disabled])
 
   useEffect(() => {
+    const handleFocus = () => {
+      setTimeout(() => {
+        if (inputRef.current) {
+          inputRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+        }
+      }, 300)
+    }
+
+    const input = inputRef.current
+    if (input) {
+      input.addEventListener('focus', handleFocus)
+    }
+
+    return () => {
+      if (input) {
+        input.removeEventListener('focus', handleFocus)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
     if (editingMessage) {
       setMessage(editingMessage.content)
       setTimeout(() => {
@@ -138,7 +159,7 @@ export default function MessageInput({
   }
 
   return (
-    <div className="border-t border-cyan-200 bg-white relative">
+    <div className="border-t border-cyan-200 bg-white relative w-full">
       {(replyingTo || editingMessage) && (
         <div className="px-3 pt-2 pb-1 bg-slate-50 border-b border-slate-200">
           <div className="flex items-start justify-between gap-2">
@@ -201,6 +222,13 @@ export default function MessageInput({
               const newHeight = Math.min(target.scrollHeight, 120)
               target.style.height = newHeight + 'px'
               target.style.overflowY = target.scrollHeight > 120 ? 'auto' : 'hidden'
+            }}
+            onFocus={() => {
+              setTimeout(() => {
+                if (inputRef.current) {
+                  inputRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' })
+                }
+              }, 100)
             }}
           />
           <Button
