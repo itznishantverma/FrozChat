@@ -777,8 +777,8 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
   }
 
   return (
-    <div className="h-screen overflow-hidden bg-gradient-to-br from-cyan-50 via-blue-50 to-slate-100 flex flex-col">
-      <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-cyan-200 bg-white/80 backdrop-blur-sm">
+    <div className="h-screen w-screen overflow-hidden bg-gradient-to-br from-cyan-50 via-blue-50 to-slate-100 flex flex-col" style={{ height: '100dvh' }}>
+      <div className="flex-shrink-0 flex items-center justify-between px-6 py-4 border-b border-cyan-200 bg-white backdrop-blur-sm shadow-sm z-20">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 bg-gradient-to-br from-cyan-500 to-blue-500 rounded-full flex items-center justify-center">
@@ -797,7 +797,7 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
         </div>
       </div>
 
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden min-h-0">
         <MessageList
           messages={messages}
           currentUserId={currentUser.type === 'authenticated' ? currentUser.id : undefined}
