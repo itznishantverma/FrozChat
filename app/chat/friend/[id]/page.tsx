@@ -7,7 +7,7 @@ import AuthModal from '@/components/AuthModal'
 import { supabase } from '@/lib/supabase'
 import { Snowflake } from 'lucide-react'
 
-export default function ChatPage() {
+export default function FriendChatPage() {
   const params = useParams()
   const router = useRouter()
   const roomId = params.id as string
@@ -33,7 +33,6 @@ export default function ChatPage() {
       }
 
       const sessionData = JSON.parse(existingSession)
-
       let user: any = null
 
       if (sessionData.type === 'anonymous') {
@@ -91,8 +90,8 @@ export default function ChatPage() {
         return
       }
 
-      if (room.closed_at || !room.is_active) {
-        setError('This chat room has been closed')
+      if (room.room_type !== 'friend') {
+        setError('This is not a friend chat room')
         setTimeout(() => {
           router.push('/chat/new')
         }, 2000)
@@ -105,10 +104,6 @@ export default function ChatPage() {
       const currentUserId = isUserAuth ? user.id : null
       const currentGuestId = !isUserAuth ? user.id : null
 
-      console.log('Room data:', room)
-      console.log('Current user:', { isUserAuth, currentUserId, currentGuestId })
-
-      // Verify user is a participant in this room
       const isParticipant = (
         (currentUserId && (room.user_id_1 === currentUserId || room.user_id_2 === currentUserId)) ||
         (currentGuestId && (room.guest_id_1 === currentGuestId || room.guest_id_2 === currentGuestId))
@@ -124,13 +119,12 @@ export default function ChatPage() {
       }
 
       if (room.user_id_1 && room.user_id_1 !== currentUserId) {
-        const { data: profile, error: profileError } = await supabase
+        const { data: profile } = await supabase
           .from('profiles')
           .select('*')
           .eq('id', room.user_id_1)
           .maybeSingle()
 
-        console.log('Fetched user_id_1 profile (all fields):', profile, profileError)
         partner = profile ? {
           id: profile.id,
           username: profile.username,
@@ -138,13 +132,12 @@ export default function ChatPage() {
           type: 'authenticated'
         } : null
       } else if (room.user_id_2 && room.user_id_2 !== currentUserId) {
-        const { data: profile, error: profileError } = await supabase
+        const { data: profile } = await supabase
           .from('profiles')
           .select('*')
           .eq('id', room.user_id_2)
           .maybeSingle()
 
-        console.log('Fetched user_id_2 profile (all fields):', profile, profileError)
         partner = profile ? {
           id: profile.id,
           username: profile.username,
@@ -152,13 +145,12 @@ export default function ChatPage() {
           type: 'authenticated'
         } : null
       } else if (room.guest_id_1 && room.guest_id_1 !== currentGuestId) {
-        const { data: guestProfile, error: guestError } = await supabase
+        const { data: guestProfile } = await supabase
           .from('guest_users')
           .select('*')
           .eq('id', room.guest_id_1)
           .maybeSingle()
 
-        console.log('Fetched guest_id_1 (all fields):', guestProfile, guestError)
         partner = guestProfile ? {
           id: guestProfile.id,
           username: guestProfile.username,
@@ -166,13 +158,12 @@ export default function ChatPage() {
           type: 'anonymous'
         } : null
       } else if (room.guest_id_2 && room.guest_id_2 !== currentGuestId) {
-        const { data: guestProfile, error: guestError } = await supabase
+        const { data: guestProfile } = await supabase
           .from('guest_users')
           .select('*')
           .eq('id', room.guest_id_2)
           .maybeSingle()
 
-        console.log('Fetched guest_id_2 (all fields):', guestProfile, guestError)
         partner = guestProfile ? {
           id: guestProfile.id,
           username: guestProfile.username,
@@ -181,12 +172,11 @@ export default function ChatPage() {
         } : null
       }
 
-      console.log('Final partner user:', partner)
-      setPartnerUser(partner || { username: 'Anonymous User', display_name: 'Anonymous User' })
+      setPartnerUser(partner || { username: 'Friend', display_name: 'Friend' })
       setLoading(false)
     } catch (err) {
-      console.error('Error loading chat:', err)
-      setError('Failed to load chat')
+      console.error('Error loading friend chat:', err)
+      setError('Failed to load friend chat')
       setLoading(false)
     }
   }
@@ -202,7 +192,7 @@ export default function ChatPage() {
         <div className="text-center">
           <Snowflake className="h-16 w-16 text-cyan-600 mx-auto mb-4 animate-spin" />
           <h1 className="text-2xl font-bold text-slate-800 mb-2">
-            Loading chat...
+            Loading friend chat...
           </h1>
           <p className="text-slate-600">
             Please wait while we connect you

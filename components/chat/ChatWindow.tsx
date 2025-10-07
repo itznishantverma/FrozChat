@@ -3,12 +3,37 @@
 import { useState, useEffect, useRef } from 'react'
 import { Card } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { ArrowLeft, Snowflake, User, CircleAlert as AlertCircle } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
+import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
+import { ArrowLeft, Snowflake, User, CircleAlert as AlertCircle, UserPlus, Users, Menu, Bell, MoveVertical as MoreVertical, UserMinus, Ban, Flag } from 'lucide-react'
 import MessageList from './MessageList'
 import MessageInput from './MessageInput'
+import FriendRequestModal from '@/components/FriendRequestModal'
+import InlineFriendRequests from '@/components/InlineFriendRequests'
+import FriendsSidebar from '@/components/Sidebar/FriendsSidebar'
+import ActiveChatRoomIndicator from '@/components/ActiveChatRoomIndicator'
 import { supabase } from '@/lib/supabase'
 import { MatchingService } from '@/lib/matching-service'
+import { FriendService } from '@/lib/friend-service'
 import { useRouter } from 'next/navigation'
+import { useToast } from '@/hooks/use-toast'
 
 interface Message {
   id: string
@@ -47,7 +72,23 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
   const [replyingTo, setReplyingTo] = useState<Message | null>(null)
   const [editingMessage, setEditingMessage] = useState<{ id: string; content: string } | null>(null)
   const [justSentMessageIds, setJustSentMessageIds] = useState<Set<string>>(new Set())
+  const [showFriendRequestModal, setShowFriendRequestModal] = useState(false)
+  const [isFriend, setIsFriend] = useState(false)
+  const [friendRequestSent, setFriendRequestSent] = useState(false)
+  const [friendRequestReceived, setFriendRequestReceived] = useState(false)
+  const [pendingRequestCount, setPendingRequestCount] = useState(0)
+  const [pendingRequests, setPendingRequests] = useState<any[]>([])
+  const [showMobileSidebar, setShowMobileSidebar] = useState(false)
+  const [showNotifications, setShowNotifications] = useState(false)
+  const [showUnfriendDialog, setShowUnfriendDialog] = useState(false)
+  const [showBlockDialog, setShowBlockDialog] = useState(false)
+  const [showReportDialog, setShowReportDialog] = useState(false)
+  const [reportCategory, setReportCategory] = useState<'harassment' | 'spam' | 'inappropriate' | 'other'>('other')
+  const [reportReason, setReportReason] = useState('')
+  const [friendshipId, setFriendshipId] = useState<string | null>(null)
+  const [roomType, setRoomType] = useState<string>('random')
   const router = useRouter()
+  const { toast } = useToast()
   const roomChannelRef = useRef<any>(null)
   const matchCheckInterval = useRef<any>(null)
   const escTimeoutRef = useRef<any>(null)
@@ -59,6 +100,28 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
     checkRoomStatus()
     loadMessages()
     setupRealtimeSubscription()
+    checkFriendshipStatus()
+    loadPendingRequests()
+    loadRoomType()
+
+    // Subscribe to friend request updates
+    const requestsSubscription = FriendService.subscribeToPendingRequests(
+      currentUser.type === 'authenticated' ? currentUser.id : undefined,
+      currentUser.type === 'anonymous' ? currentUser.id : undefined,
+      () => {
+        loadPendingRequests()
+        checkFriendshipStatus()
+      }
+    )
+
+    // Subscribe to friendship updates
+    const friendshipsSubscription = FriendService.subscribeToFriendships(
+      currentUser.type === 'authenticated' ? currentUser.id : undefined,
+      currentUser.type === 'anonymous' ? currentUser.id : undefined,
+      () => {
+        checkFriendshipStatus()
+      }
+    )
 
     // Fallback: Poll for room status every 10 seconds
     // This ensures we detect closure even if realtime fails
@@ -86,6 +149,10 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
 
         if (roomClosed && !searching) {
           handleStartNewChat()
+          return
+        }
+
+        if (roomType === 'friend') {
           return
         }
 
@@ -143,6 +210,12 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
       if (messagePollingInterval.current) {
         clearInterval(messagePollingInterval.current)
       }
+      if (requestsSubscription) {
+        requestsSubscription.unsubscribe()
+      }
+      if (friendshipsSubscription) {
+        friendshipsSubscription.unsubscribe()
+      }
     }
   }, [roomId, showSkipConfirm, roomClosed, searching])
 
@@ -172,6 +245,106 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
       }
     } catch (err) {
       console.error('Error in checkRoomStatus:', err)
+    }
+  }
+
+  const loadPendingRequests = async () => {
+    try {
+      const requests = await FriendService.getPendingFriendRequests(
+        currentUser.type === 'authenticated' ? currentUser.id : undefined,
+        currentUser.type === 'anonymous' ? currentUser.id : undefined
+      )
+      setPendingRequests(requests)
+      setPendingRequestCount(requests.length)
+    } catch (err) {
+      console.error('Error loading pending requests:', err)
+    }
+  }
+
+  const loadRoomType = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('chat_rooms')
+        .select('room_type')
+        .eq('id', roomId)
+        .maybeSingle()
+
+      if (!error && data) {
+        setRoomType(data.room_type || 'random')
+      }
+    } catch (err) {
+      console.error('Error loading room type:', err)
+    }
+  }
+
+  const checkFriendshipStatus = async () => {
+    if (!partnerUser) return
+
+    try {
+      const isFriendAlready = await FriendService.checkFriendshipExists(
+        currentUser.type === 'authenticated' ? currentUser.id : undefined,
+        currentUser.type === 'anonymous' ? currentUser.id : undefined,
+        partnerUser.type === 'authenticated' ? partnerUser.id : undefined,
+        partnerUser.type === 'anonymous' ? partnerUser.id : undefined
+      )
+
+      setIsFriend(isFriendAlready)
+
+      if (isFriendAlready) {
+        const fId = await FriendService.getFriendshipId(
+          currentUser.type === 'authenticated' ? currentUser.id : undefined,
+          currentUser.type === 'anonymous' ? currentUser.id : undefined,
+          partnerUser.type === 'authenticated' ? partnerUser.id : undefined,
+          partnerUser.type === 'anonymous' ? partnerUser.id : undefined
+        )
+        setFriendshipId(fId)
+      }
+
+      const requestFromPartner = pendingRequests.find(req => {
+        if (partnerUser.type === 'authenticated') {
+          return req.requester_user_id === partnerUser.id
+        } else {
+          return req.requester_guest_id === partnerUser.id
+        }
+      })
+
+      setFriendRequestReceived(!!requestFromPartner)
+    } catch (err) {
+      console.error('Error checking friendship status:', err)
+    }
+  }
+
+  const handleSendFriendRequest = async (message?: string) => {
+    try {
+      const result = await FriendService.sendFriendRequest(
+        currentUser.type === 'authenticated' ? currentUser.id : undefined,
+        currentUser.type === 'anonymous' ? currentUser.id : undefined,
+        partnerUser.type === 'authenticated' ? partnerUser.id : undefined,
+        partnerUser.type === 'anonymous' ? partnerUser.id : undefined,
+        message,
+        roomId
+      )
+
+      if (result.success) {
+        setFriendRequestSent(true)
+        toast({
+          title: 'Friend request sent!',
+          description: `Your request has been sent to ${partnerUser.username || partnerUser.display_name}`,
+        })
+      } else {
+        toast({
+          title: 'Error',
+          description: result.error || 'Failed to send friend request',
+          variant: 'destructive',
+        })
+      }
+    } catch (err) {
+      console.error('Error sending friend request:', err)
+      toast({
+        title: 'Error',
+        description: 'Failed to send friend request',
+        variant: 'destructive',
+      })
     }
   }
 
@@ -436,6 +609,11 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
 
   const handleSendMessage = async (content: string, replyToId?: string) => {
     if (roomClosed) {
+      toast({
+        title: 'Cannot send message',
+        description: 'This chat room is closed',
+        variant: 'destructive',
+      })
       throw new Error('Cannot send message to closed room')
     }
 
@@ -656,6 +834,152 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
     }
   }
 
+  const handleUnfriend = async () => {
+    if (!isFriend || !partnerUser) {
+      toast({
+        title: 'Error',
+        description: 'Cannot unfriend at this time',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    try {
+      let fId = friendshipId
+
+      if (!fId) {
+        fId = await FriendService.getFriendshipId(
+          currentUser.type === 'authenticated' ? currentUser.id : undefined,
+          currentUser.type === 'anonymous' ? currentUser.id : undefined,
+          partnerUser.type === 'authenticated' ? partnerUser.id : undefined,
+          partnerUser.type === 'anonymous' ? partnerUser.id : undefined
+        )
+      }
+
+      if (!fId) {
+        toast({
+          title: 'Error',
+          description: 'Friendship not found',
+          variant: 'destructive',
+        })
+        return
+      }
+
+      const result = await FriendService.unfriendUser(
+        fId,
+        currentUser.type === 'authenticated' ? currentUser.id : undefined,
+        currentUser.type === 'anonymous' ? currentUser.id : undefined
+      )
+
+      if (result.success) {
+        toast({
+          title: 'Unfriended',
+          description: 'You are no longer friends with this user. The chat room has been temporarily closed.',
+        })
+        setIsFriend(false)
+        setFriendshipId(null)
+        setShowUnfriendDialog(false)
+        setRoomClosed(true)
+        setClosedByMe(true)
+      } else {
+        toast({
+          title: 'Error',
+          description: result.error || 'Failed to unfriend user',
+          variant: 'destructive',
+        })
+      }
+    } catch (err) {
+      console.error('Error unfriending user:', err)
+      toast({
+        title: 'Error',
+        description: 'Failed to unfriend user',
+        variant: 'destructive',
+      })
+    }
+  }
+
+  const handleBlock = async () => {
+    try {
+      const result = await FriendService.blockUser(
+        currentUser.type === 'authenticated' ? currentUser.id : undefined,
+        currentUser.type === 'anonymous' ? currentUser.id : undefined,
+        partnerUser.type === 'authenticated' ? partnerUser.id : undefined,
+        partnerUser.type === 'anonymous' ? partnerUser.id : undefined,
+        'Blocked from chat'
+      )
+
+      if (result.success) {
+        toast({
+          title: 'User blocked',
+          description: 'This user has been blocked and you will not be matched with them again.',
+        })
+        setShowBlockDialog(false)
+        setRoomClosed(true)
+        setClosedByMe(true)
+        router.push('/')
+      } else {
+        toast({
+          title: 'Error',
+          description: result.error || 'Failed to block user',
+          variant: 'destructive',
+        })
+      }
+    } catch (err) {
+      console.error('Error blocking user:', err)
+      toast({
+        title: 'Error',
+        description: 'Failed to block user',
+        variant: 'destructive',
+      })
+    }
+  }
+
+  const handleReport = async () => {
+    if (!reportReason.trim()) {
+      toast({
+        title: 'Error',
+        description: 'Please provide a reason for reporting',
+        variant: 'destructive',
+      })
+      return
+    }
+
+    try {
+      const result = await FriendService.reportUser(
+        currentUser.type === 'authenticated' ? currentUser.id : undefined,
+        currentUser.type === 'anonymous' ? currentUser.id : undefined,
+        partnerUser.type === 'authenticated' ? partnerUser.id : undefined,
+        partnerUser.type === 'anonymous' ? partnerUser.id : undefined,
+        reportCategory,
+        reportReason,
+        roomId
+      )
+
+      if (result.success) {
+        toast({
+          title: 'Report submitted',
+          description: 'Thank you for your report. We will review it shortly.',
+        })
+        setShowReportDialog(false)
+        setReportReason('')
+        setReportCategory('other')
+      } else {
+        toast({
+          title: 'Error',
+          description: result.error || 'Failed to submit report',
+          variant: 'destructive',
+        })
+      }
+    } catch (err) {
+      console.error('Error reporting user:', err)
+      toast({
+        title: 'Error',
+        description: 'Failed to submit report',
+        variant: 'destructive',
+      })
+    }
+  }
+
   const handleStartNewChat = async () => {
     setSearching(true)
 
@@ -777,95 +1101,324 @@ export default function ChatWindow({ roomId, currentUser, partnerUser }: ChatWin
   }
 
   return (
-    <div className="h-screen w-screen overflow-hidden bg-gradient-to-br from-cyan-50 via-blue-50 to-slate-100 flex flex-col" style={{ height: '100dvh' }}>
-      <div className="flex-shrink-0 flex items-center justify-between px-6 py-4 border-b border-cyan-200 bg-white backdrop-blur-sm shadow-sm z-20">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-gradient-to-br from-cyan-500 to-blue-500 rounded-full flex items-center justify-center">
-              <User className="h-5 w-5 text-white" />
-            </div>
-            <div>
-              <h2 className="font-semibold text-slate-800">
-                {partnerUser?.display_name || partnerUser?.username || 'Anonymous User'}
-              </h2>
-              <div className="flex items-center gap-1">
-                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                <span className="text-xs text-slate-600">Online</span>
+    <div className="h-screen w-screen overflow-hidden bg-gradient-to-br from-cyan-50 via-blue-50 to-slate-100 flex" style={{ height: '100dvh' }}>
+      <div className="w-72 flex-shrink-0 hidden lg:flex flex-col p-4">
+        <FriendsSidebar
+          userId={currentUser.type === 'authenticated' ? currentUser.id : undefined}
+          guestId={currentUser.type === 'anonymous' ? currentUser.id : undefined}
+        />
+      </div>
+
+      <div className="flex-1 flex flex-col overflow-hidden min-w-0">
+        <div className="flex-shrink-0 flex items-center justify-between px-4 md:px-6 py-4 border-b border-cyan-200 bg-white backdrop-blur-sm shadow-sm z-20">
+          <div className="flex items-center gap-2 md:gap-4">
+            <Sheet open={showMobileSidebar} onOpenChange={setShowMobileSidebar}>
+              <SheetTrigger asChild>
+                <Button variant="ghost" size="sm" className="lg:hidden relative">
+                  <Menu className="h-5 w-5" />
+                  {pendingRequestCount > 0 && (
+                    <Badge className="absolute -top-1 -right-1 h-5 w-5 flex items-center justify-center p-0 bg-red-500 text-white text-xs">
+                      {pendingRequestCount}
+                    </Badge>
+                  )}
+                </Button>
+              </SheetTrigger>
+              <SheetContent side="left" className="w-80 p-0">
+                <div className="h-full flex flex-col">
+                  {pendingRequestCount > 0 && (
+                    <div className="max-h-96 overflow-auto">
+                      <InlineFriendRequests
+                        requests={pendingRequests}
+                        userId={currentUser.type === 'authenticated' ? currentUser.id : undefined}
+                        guestId={currentUser.type === 'anonymous' ? currentUser.id : undefined}
+                        onUpdate={() => {
+                          loadPendingRequests()
+                          checkFriendshipStatus()
+                        }}
+                      />
+                    </div>
+                  )}
+                  <div className="flex-1 overflow-hidden p-4">
+                    <FriendsSidebar
+                      userId={currentUser.type === 'authenticated' ? currentUser.id : undefined}
+                      guestId={currentUser.type === 'anonymous' ? currentUser.id : undefined}
+                    />
+                  </div>
+                </div>
+              </SheetContent>
+            </Sheet>
+            <div className="flex items-center gap-2 md:gap-3">
+              <div className="w-8 h-8 md:w-10 md:h-10 bg-gradient-to-br from-cyan-500 to-blue-500 rounded-full flex items-center justify-center">
+                <User className="h-4 w-4 md:h-5 md:w-5 text-white" />
+              </div>
+              <div>
+                <h2 className="font-semibold text-sm md:text-base text-slate-800">
+                  {partnerUser?.display_name || partnerUser?.username || 'Anonymous User'}
+                </h2>
+                <div className="flex items-center gap-1">
+                  <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                  <span className="text-xs text-slate-600">Online</span>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      </div>
-
-      <div className="flex-1 flex flex-col overflow-hidden min-h-0">
-        <MessageList
-          messages={messages}
-          currentUserId={currentUser.type === 'authenticated' ? currentUser.id : undefined}
-          currentGuestId={currentUser.type === 'anonymous' ? currentUser.id : undefined}
-          onReply={handleReply}
-          onEdit={handleEdit}
-          onReport={handleReportMessage}
-          justSentMessageIds={justSentMessageIds}
-        />
-        {!roomClosed && (
-          <MessageInput
-            onSendMessage={handleSendMessage}
-            onEditMessage={handleEditMessage}
-            onSkip={handleLeaveChat}
-            skipConfirmMode={showSkipConfirm}
-            onSkipClick={() => setShowSkipConfirm(true)}
-            replyingTo={replyingTo ? {
-              id: replyingTo.id,
-              content: replyingTo.content,
-              senderUsername: replyingTo.senderUsername
-            } : null}
-            editingMessage={editingMessage}
-            onCancelReply={handleCancelReply}
-            onCancelEdit={handleCancelEdit}
-          />
-        )}
-        {roomClosed && (
-          <div className="p-6 bg-gradient-to-r from-red-50 to-orange-50 border-t-2 border-red-300">
-            <div className="max-w-2xl mx-auto text-center space-y-4">
-              {!searching ? (
-                <>
-                  <div className="inline-flex items-center justify-center w-16 h-16 bg-red-100 rounded-full mb-2">
-                    <AlertCircle className="h-8 w-8 text-red-600" />
-                  </div>
-                  <p className="text-lg font-semibold text-red-800">
-                    {closedByMe ? 'You have left the chat' : 'Your partner has left the chat'}
-                  </p>
-                  <p className="text-sm text-red-600">
-                    This chat room has been closed and is no longer accessible.
-                  </p>
-                  <Button
-                    onClick={handleStartNewChat}
-                    className="bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white font-semibold px-8 py-3 rounded-lg shadow-lg transition-all duration-200 hover:shadow-xl"
-                  >
-                    Start New Chat
+          <div className="flex items-center gap-2">
+            <Sheet open={showNotifications} onOpenChange={setShowNotifications}>
+              <SheetTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="relative hidden md:flex"
+                >
+                  <Bell className="h-4 w-4" />
+                  {pendingRequestCount > 0 && (
+                    <Badge className="absolute -top-1 -right-1 h-5 w-5 flex items-center justify-center p-0 bg-red-500 text-white text-xs">
+                      {pendingRequestCount}
+                    </Badge>
+                  )}
+                </Button>
+              </SheetTrigger>
+              <SheetContent side="right" className="w-96 p-0">
+                <InlineFriendRequests
+                  requests={pendingRequests}
+                  userId={currentUser.type === 'authenticated' ? currentUser.id : undefined}
+                  guestId={currentUser.type === 'anonymous' ? currentUser.id : undefined}
+                  onUpdate={() => {
+                    loadPendingRequests()
+                    checkFriendshipStatus()
+                  }}
+                />
+              </SheetContent>
+            </Sheet>
+            {!roomClosed && !isFriend && !friendRequestSent && !friendRequestReceived && (
+              <Button
+                onClick={() => setShowFriendRequestModal(true)}
+                size="sm"
+                className="bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-700 hover:to-blue-700 text-xs md:text-sm"
+              >
+                <UserPlus className="h-3 w-3 md:h-4 md:w-4 md:mr-2" />
+                <span className="hidden md:inline">Add Friend</span>
+              </Button>
+            )}
+            {!roomClosed && isFriend && (
+              <div className="flex items-center gap-2 text-xs md:text-sm text-green-600">
+                <Users className="h-3 w-3 md:h-4 md:w-4" />
+                <span className="hidden md:inline">Friends</span>
+              </div>
+            )}
+            {!roomClosed && friendRequestSent && !isFriend && !friendRequestReceived && (
+              <div className="flex items-center gap-2 text-xs md:text-sm text-blue-600">
+                <UserPlus className="h-3 w-3 md:h-4 md:w-4" />
+                <span>Request Sent</span>
+              </div>
+            )}
+            {!roomClosed && friendRequestReceived && !isFriend && (
+              <div className="flex items-center gap-2 text-xs md:text-sm text-orange-600">
+                <Bell className="h-3 w-3 md:h-4 md:w-4" />
+                <span>Request Received</span>
+              </div>
+            )}
+            {!roomClosed && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="sm">
+                    <MoreVertical className="h-4 w-4" />
                   </Button>
-                </>
-              ) : (
-                <>
-                  <div className="inline-flex items-center justify-center w-16 h-16 bg-cyan-100 rounded-full mb-2">
-                    <Snowflake className="h-8 w-8 text-cyan-600 animate-spin" />
-                  </div>
-                  <p className="text-lg font-semibold text-cyan-800">
-                    Finding you a new chat partner...
-                  </p>
-                  <p className="text-sm text-cyan-600">
-                    This may take a few moments. Please wait.
-                  </p>
-                  <div className="flex items-center justify-center gap-2">
-                    <div className="w-2 h-2 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                    <div className="w-2 h-2 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                    <div className="w-2 h-2 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
-                  </div>
-                </>
-              )}
-            </div>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  {isFriend && (
+                    <>
+                      <DropdownMenuItem onClick={() => setShowUnfriendDialog(true)} className="text-orange-600">
+                        <UserMinus className="h-4 w-4 mr-2" />
+                        Unfriend
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                    </>
+                  )}
+                  <DropdownMenuItem onClick={() => setShowReportDialog(true)}>
+                    <Flag className="h-4 w-4 mr-2" />
+                    Report User
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setShowBlockDialog(true)} className="text-red-600">
+                    <Ban className="h-4 w-4 mr-2" />
+                    Block User
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
           </div>
-        )}
+        </div>
+
+        <div className="flex-1 flex flex-col overflow-hidden min-h-0 bg-white">
+          <MessageList
+            messages={messages}
+            currentUserId={currentUser.type === 'authenticated' ? currentUser.id : undefined}
+            currentGuestId={currentUser.type === 'anonymous' ? currentUser.id : undefined}
+            onReply={handleReply}
+            onEdit={handleEdit}
+            onReport={handleReportMessage}
+            justSentMessageIds={justSentMessageIds}
+          />
+          {!roomClosed && (
+            <MessageInput
+              onSendMessage={handleSendMessage}
+              onEditMessage={handleEditMessage}
+              onSkip={roomType === 'friend' ? undefined : handleLeaveChat}
+              skipConfirmMode={showSkipConfirm}
+              onSkipClick={roomType === 'friend' ? undefined : () => setShowSkipConfirm(true)}
+              replyingTo={replyingTo ? {
+                id: replyingTo.id,
+                content: replyingTo.content,
+                senderUsername: replyingTo.senderUsername
+              } : null}
+              editingMessage={editingMessage}
+              onCancelReply={handleCancelReply}
+              onCancelEdit={handleCancelEdit}
+            />
+          )}
+          {roomClosed && (
+            <div className="p-6 bg-gradient-to-r from-red-50 to-orange-50 border-t-2 border-red-300">
+              <div className="max-w-2xl mx-auto text-center space-y-4">
+                {!searching ? (
+                  <>
+                    <div className="inline-flex items-center justify-center w-16 h-16 bg-red-100 rounded-full mb-2">
+                      <AlertCircle className="h-8 w-8 text-red-600" />
+                    </div>
+                    <p className="text-lg font-semibold text-red-800">
+                      {roomType === 'friend'
+                        ? 'This friendship chat is closed'
+                        : closedByMe
+                          ? 'You have left the chat'
+                          : 'Your partner has left the chat'}
+                    </p>
+                    <p className="text-sm text-red-600">
+                      {roomType === 'friend'
+                        ? 'You can view past messages but cannot send new ones. If you become friends again, you can continue chatting here.'
+                        : 'This chat room has been closed and is no longer accessible.'}
+                    </p>
+                    {roomType !== 'friend' && (
+                      <Button
+                        onClick={handleStartNewChat}
+                        className="bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white font-semibold px-8 py-3 rounded-lg shadow-lg transition-all duration-200 hover:shadow-xl"
+                      >
+                        Start New Chat
+                      </Button>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div className="inline-flex items-center justify-center w-16 h-16 bg-cyan-100 rounded-full mb-2">
+                      <Snowflake className="h-8 w-8 text-cyan-600 animate-spin" />
+                    </div>
+                    <p className="text-lg font-semibold text-cyan-800">
+                      Finding you a new chat partner...
+                    </p>
+                    <p className="text-sm text-cyan-600">
+                      This may take a few moments. Please wait.
+                    </p>
+                    <div className="flex items-center justify-center gap-2">
+                      <div className="w-2 h-2 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
+                      <div className="w-2 h-2 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
+                      <div className="w-2 h-2 bg-cyan-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <FriendRequestModal
+          isOpen={showFriendRequestModal}
+          onClose={() => setShowFriendRequestModal(false)}
+          onSend={handleSendFriendRequest}
+          partnerUsername={partnerUser?.display_name || partnerUser?.username || 'Anonymous User'}
+        />
+
+        <ActiveChatRoomIndicator
+          userId={currentUser.type === 'authenticated' ? currentUser.id : undefined}
+          guestId={currentUser.type === 'anonymous' ? currentUser.id : undefined}
+          currentRoomId={roomId}
+        />
+
+        <AlertDialog open={showUnfriendDialog} onOpenChange={setShowUnfriendDialog}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Unfriend User</AlertDialogTitle>
+              <AlertDialogDescription>
+                Are you sure you want to unfriend {partnerUser?.display_name || partnerUser?.username || 'this user'}?
+                The chat room will be temporarily closed. If you send them a friend request again and they accept,
+                you can continue chatting in the same room.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={handleUnfriend} className="bg-orange-600 hover:bg-orange-700">
+                Unfriend
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <AlertDialog open={showBlockDialog} onOpenChange={setShowBlockDialog}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Block User</AlertDialogTitle>
+              <AlertDialogDescription>
+                Are you sure you want to block {partnerUser?.display_name || partnerUser?.username || 'this user'}?
+                You will not be matched with them again, and any existing friendship will be permanently ended.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={handleBlock} className="bg-red-600 hover:bg-red-700">
+                Block User
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <AlertDialog open={showReportDialog} onOpenChange={setShowReportDialog}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Report User</AlertDialogTitle>
+              <AlertDialogDescription>
+                Report {partnerUser?.display_name || partnerUser?.username || 'this user'} for inappropriate behavior.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Category</label>
+                <select
+                  value={reportCategory}
+                  onChange={(e) => setReportCategory(e.target.value as any)}
+                  className="w-full p-2 border rounded-md"
+                >
+                  <option value="harassment">Harassment</option>
+                  <option value="spam">Spam</option>
+                  <option value="inappropriate">Inappropriate Content</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Reason</label>
+                <textarea
+                  value={reportReason}
+                  onChange={(e) => setReportReason(e.target.value)}
+                  placeholder="Please describe the issue..."
+                  className="w-full p-2 border rounded-md min-h-[100px]"
+                  maxLength={1000}
+                />
+              </div>
+            </div>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={handleReport} className="bg-red-600 hover:bg-red-700">
+                Submit Report
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </div>
   )

@@ -5,13 +5,20 @@ import { useRouter } from 'next/navigation'
 import AuthModal from '@/components/AuthModal'
 import ClaimAccountModal from '@/components/ClaimAccountModal'
 import FilterModal, { FilterOptions } from '@/components/FilterModal'
+import FriendsSidebar from '@/components/Sidebar/FriendsSidebar'
+import UserDetailsSidebar from '@/components/Sidebar/UserDetailsSidebar'
+import MatchingContent from '@/components/MainContent/MatchingContent'
+import ActiveChatRoomIndicator from '@/components/ActiveChatRoomIndicator'
+import FriendRequestNotifications from '@/components/FriendRequestNotifications'
 import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
-import { ArrowLeft, Snowflake, MessageSquare, Crown, LogOut, Filter, Play, Loader as Loader2, User, MapPin, Calendar } from 'lucide-react'
+import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet'
+import { ArrowLeft, Snowflake, MessageSquare, Menu, Bell } from 'lucide-react'
+import { Badge } from '@/components/ui/badge'
 import { supabase } from '@/lib/supabase'
 import { MatchingService, MatchResult } from '@/lib/matching-service'
 import { useToast } from '@/hooks/use-toast'
 import IPService from '@/lib/ip-service'
+import { FriendService } from '@/lib/friend-service'
 
 export default function ChatNewPage() {
   const [showAuthModal, setShowAuthModal] = useState(false)
@@ -24,6 +31,8 @@ export default function ChatNewPage() {
   const [filters, setFilters] = useState<FilterOptions>({})
   const [hasFilters, setHasFilters] = useState(false)
   const [userIp, setUserIp] = useState<string | null>(null)
+  const [pendingRequestsCount, setPendingRequestsCount] = useState(0)
+  const [showMobileFriendsSidebar, setShowMobileFriendsSidebar] = useState(false)
   const router = useRouter()
   const { toast } = useToast()
 
@@ -32,11 +41,80 @@ export default function ChatNewPage() {
     fetchUserIp()
   }, [])
 
+  useEffect(() => {
+    if (user) {
+      loadPendingRequestsCount()
+    }
+  }, [user])
+
+  const loadPendingRequestsCount = async () => {
+    const requests = await FriendService.getPendingFriendRequests(
+      user?.type === 'authenticated' ? user.id : undefined,
+      user?.type === 'anonymous' ? user.id : undefined
+    )
+    setPendingRequestsCount(requests.length)
+  }
+
+  useEffect(() => {
+    if (user) {
+      checkForActiveChatRoom()
+    }
+  }, [user])
+
+  useEffect(() => {
+    if (!searching || !user) return
+
+    const userId = user.type === 'authenticated' ? user.id : undefined
+    const guestUserId = user.type === 'anonymous' ? user.id : undefined
+
+    const handleBeforeUnload = () => {
+      if (searching && (userId || guestUserId)) {
+        MatchingService.leaveQueue(userId, guestUserId, true)
+      }
+    }
+
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    window.addEventListener('pagehide', handleBeforeUnload)
+
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+      window.removeEventListener('pagehide', handleBeforeUnload)
+    }
+  }, [searching, user])
+
   const fetchUserIp = async () => {
     const ipService = IPService.getInstance()
     const ipDetails = await ipService.getIPDetails()
     if (ipDetails) {
       setUserIp(ipDetails.ip)
+    }
+  }
+
+  const checkForActiveChatRoom = async () => {
+    if (!user) return
+
+    const userId = user.type === 'authenticated' ? user.id : undefined
+    const guestUserId = user.type === 'anonymous' ? user.id : undefined
+
+    try {
+      const { data, error } = await supabase
+        .from('chat_rooms')
+        .select('id, room_type')
+        .eq('is_active', true)
+        .is('closed_at', null)
+        .neq('room_type', 'friend')
+        .or(
+          userId
+            ? `user_id_1.eq.${userId},user_id_2.eq.${userId}`
+            : `guest_id_1.eq.${guestUserId},guest_id_2.eq.${guestUserId}`
+        )
+        .maybeSingle()
+
+      if (!error && data) {
+        router.push(`/chat/${data.id}`)
+      }
+    } catch (err) {
+      console.error('Error checking active chat room:', err)
     }
   }
 
@@ -142,7 +220,7 @@ export default function ChatNewPage() {
 
     localStorage.removeItem('frozChatSession')
     setUser(null)
-    setShowAuthModal(true)
+    router.push('/')
   }
 
   const handleApplyFilters = (newFilters: FilterOptions) => {
@@ -165,6 +243,28 @@ export default function ChatNewPage() {
 
   const handleStartMatching = async () => {
     if (!user) return
+
+    try {
+      const { data, error } = await supabase
+        .from('chat_rooms')
+        .select('id, room_type')
+        .eq('is_active', true)
+        .is('closed_at', null)
+        .neq('room_type', 'friend')
+        .or(
+          user.type === 'authenticated'
+            ? `user_id_1.eq.${user.id},user_id_2.eq.${user.id}`
+            : `guest_id_1.eq.${user.id},guest_id_2.eq.${user.id}`
+        )
+        .maybeSingle()
+
+      if (!error && data) {
+        router.push(`/chat/${data.id}`)
+        return
+      }
+    } catch (err) {
+      console.error('Error checking active chat room:', err)
+    }
 
     setSearching(true)
 
@@ -314,11 +414,11 @@ export default function ChatNewPage() {
 
   return (
     <div className="h-screen overflow-hidden bg-gradient-to-br from-cyan-50 via-blue-50 to-slate-100 flex flex-col">
-      <div className="flex items-center justify-between px-6 py-4 border-b border-cyan-200 bg-white/80 backdrop-blur-sm">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-cyan-200 bg-white/80 backdrop-blur-sm shadow-sm">
         <div className="flex items-center gap-4">
           <Button variant="ghost" onClick={handleBackHome} className="flex items-center gap-2">
             <ArrowLeft className="h-4 w-4" />
-            Home
+            <span className="hidden sm:inline">Home</span>
           </Button>
 
           <div className="flex items-center gap-2">
@@ -327,173 +427,70 @@ export default function ChatNewPage() {
           </div>
         </div>
 
-        {user?.type === 'authenticated' && (
-          <Button variant="ghost" onClick={handleLogout} className="flex items-center gap-2">
-            <LogOut className="h-4 w-4" />
-            Logout
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          {pendingRequestsCount > 0 && (
+            <Sheet>
+              <SheetTrigger asChild>
+                <Button variant="outline" size="icon" className="relative lg:hidden">
+                  <Bell className="h-5 w-5" />
+                  <Badge className="absolute -top-1 -right-1 h-5 w-5 flex items-center justify-center p-0 bg-red-500">
+                    {pendingRequestsCount}
+                  </Badge>
+                </Button>
+              </SheetTrigger>
+              <SheetContent side="right" className="w-80 p-0">
+                <FriendRequestNotifications
+                  userId={user?.type === 'authenticated' ? user.id : undefined}
+                  guestId={user?.type === 'anonymous' ? user.id : undefined}
+                  onRequestCountChange={(count) => setPendingRequestsCount(count)}
+                />
+              </SheetContent>
+            </Sheet>
+          )}
+
+          <Sheet open={showMobileFriendsSidebar} onOpenChange={setShowMobileFriendsSidebar}>
+            <SheetTrigger asChild>
+              <Button variant="outline" size="icon" className="lg:hidden">
+                <Menu className="h-5 w-5" />
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="left" className="w-80 p-0">
+              <div className="h-full">
+                <FriendsSidebar
+                  userId={user?.type === 'authenticated' ? user.id : undefined}
+                  guestId={user?.type === 'anonymous' ? user.id : undefined}
+                />
+              </div>
+            </SheetContent>
+          </Sheet>
+        </div>
       </div>
 
-      <div className="flex-1 flex items-center justify-center p-6 overflow-hidden">
-        <div className="w-full max-w-5xl grid md:grid-cols-[320px_1fr] gap-6 h-full max-h-[calc(100vh-120px)]">
-          <Card className="p-6 border-cyan-200 shadow-lg overflow-y-auto">
-            <div className="text-center mb-6">
-              <div className="w-20 h-20 bg-gradient-to-br from-cyan-500 to-blue-500 rounded-full flex items-center justify-center mx-auto mb-4 shadow-md">
-                <Snowflake className="h-10 w-10 text-white" />
-              </div>
-              <h2 className="text-xl font-bold text-slate-800 mb-1">{displayName}</h2>
-              <div className="inline-flex items-center gap-2 bg-cyan-100 text-cyan-800 px-3 py-1 rounded-full text-xs font-medium">
-                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                <span>Online</span>
-              </div>
-            </div>
+      <div className="flex-1 flex gap-4 p-4 overflow-hidden">
+        <div className="w-72 flex-shrink-0 hidden lg:block">
+          <FriendsSidebar
+            userId={user.type === 'authenticated' ? user.id : undefined}
+            guestId={user.type === 'anonymous' ? user.id : undefined}
+          />
+        </div>
 
-            <div className="space-y-3 mb-6">
-              <div className="flex items-center gap-2 text-sm text-slate-600">
-                <User className="h-4 w-4 text-cyan-600" />
-                <span className="font-medium">Type:</span>
-                <span className="text-slate-800">{user.type === 'anonymous' ? 'Guest' : 'Member'}</span>
-              </div>
+        <div className="flex-1 min-w-0">
+          <MatchingContent
+            searching={searching}
+            hasFilters={hasFilters}
+            filters={filters}
+            onShowFilters={() => setShowFilterModal(true)}
+            onStartMatching={handleStartMatching}
+          />
+        </div>
 
-              {user.gender && (
-                <div className="flex items-center gap-2 text-sm text-slate-600">
-                  <User className="h-4 w-4 text-cyan-600" />
-                  <span className="font-medium">Gender:</span>
-                  <span className="text-slate-800 capitalize">{user.gender}</span>
-                </div>
-              )}
-
-              {user.age && (
-                <div className="flex items-center gap-2 text-sm text-slate-600">
-                  <Calendar className="h-4 w-4 text-cyan-600" />
-                  <span className="font-medium">Age:</span>
-                  <span className="text-slate-800">{user.age} years</span>
-                </div>
-              )}
-
-              {user.country && (
-                <div className="flex items-center gap-2 text-sm text-slate-600">
-                  <MapPin className="h-4 w-4 text-cyan-600" />
-                  <span className="font-medium">Location:</span>
-                  <span className="text-slate-800">{user.country}</span>
-                </div>
-              )}
-            </div>
-
-            {user.type === 'anonymous' && !user.claimed_at && (
-              <div className="bg-gradient-to-r from-yellow-50 to-orange-50 border border-yellow-200 rounded-lg p-3 mb-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <Crown className="h-4 w-4 text-yellow-600" />
-                  <h4 className="text-xs font-semibold text-yellow-800">Upgrade Account</h4>
-                </div>
-                <p className="text-xs text-yellow-700 mb-2">
-                  Save your connections and preferences!
-                </p>
-                <Button
-                  variant="outline"
-                  onClick={handleClaimAccount}
-                  className="w-full border-yellow-300 text-yellow-700 hover:bg-yellow-100"
-                  size="sm"
-                >
-                  <Crown className="h-3 w-3 mr-1" />
-                  Claim Now
-                </Button>
-              </div>
-            )}
-
-            {hasFilters && (
-              <div className="bg-slate-50 rounded-lg p-3 border border-slate-200">
-                <h4 className="text-xs font-semibold text-slate-700 mb-2">Active Filters</h4>
-                <div className="space-y-1 text-xs text-slate-600">
-                  {filters.gender && (
-                    <div className="flex justify-between">
-                      <span>Gender:</span>
-                      <span className="font-medium text-slate-800 capitalize">{filters.gender}</span>
-                    </div>
-                  )}
-                  {(filters.ageMin || filters.ageMax) && (
-                    <div className="flex justify-between">
-                      <span>Age:</span>
-                      <span className="font-medium text-slate-800">{filters.ageMin}-{filters.ageMax}</span>
-                    </div>
-                  )}
-                  {filters.country && (
-                    <div className="flex justify-between">
-                      <span>Country:</span>
-                      <span className="font-medium text-slate-800">{filters.country}</span>
-                    </div>
-                  )}
-                  {filters.interestTags && filters.interestTags.length > 0 && (
-                    <div className="pt-2 border-t border-slate-200">
-                      <span className="font-medium">Tags: </span>
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {filters.interestTags.map(tag => (
-                          <span key={tag} className="bg-cyan-100 text-cyan-800 px-2 py-0.5 rounded text-xs">
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </Card>
-
-          <Card className="p-8 border-cyan-200 shadow-lg flex flex-col items-center justify-center">
-            <div className="text-center mb-8">
-              <h1 className="text-3xl font-bold text-slate-800 mb-3">
-                Ready to Connect?
-              </h1>
-              <p className="text-slate-600 mb-6">
-                Break the ice and start chatting with new people
-              </p>
-            </div>
-
-            <div className="flex flex-col gap-4 w-full max-w-md">
-              <Button
-                onClick={() => setShowFilterModal(true)}
-                size="lg"
-                variant="outline"
-                className="w-full h-14 text-lg border-2 border-cyan-300 hover:bg-cyan-50 hover:border-cyan-400 transition-all"
-                disabled={searching}
-              >
-                <Filter className="h-5 w-5 mr-2" />
-                {hasFilters ? 'Edit Filters' : 'Add Filters'}
-                {hasFilters && (
-                  <span className="ml-2 bg-cyan-600 text-white text-xs px-2 py-1 rounded-full">
-                    Active
-                  </span>
-                )}
-              </Button>
-
-              <Button
-                onClick={handleStartMatching}
-                size="lg"
-                className="w-full h-14 text-lg bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-700 hover:to-blue-700 shadow-lg transition-all"
-                disabled={searching}
-              >
-                {searching ? (
-                  <>
-                    <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-                    Searching...
-                  </>
-                ) : (
-                  <>
-                    <Play className="h-5 w-5 mr-2" />
-                    Start Matching
-                  </>
-                )}
-              </Button>
-            </div>
-
-            <p className="text-center text-sm text-slate-500 mt-8 max-w-md">
-              {hasFilters
-                ? 'We will match you with users meeting your criteria. If none are found, we will connect you with a random user.'
-                : 'Click "Start Matching" to connect with a random user, or add filters for specific matches.'}
-            </p>
-          </Card>
+        <div className="w-80 flex-shrink-0 hidden xl:block">
+          <UserDetailsSidebar
+            user={user}
+            displayName={displayName}
+            onClaimAccount={user.type === 'anonymous' && !user.claimed_at ? handleClaimAccount : undefined}
+            onLogout={user.type === 'authenticated' ? handleLogout : undefined}
+          />
         </div>
       </div>
 
@@ -509,6 +506,11 @@ export default function ChatNewPage() {
         onClose={() => setShowClaimModal(false)}
         onSuccess={handleClaimSuccess}
         guestData={user}
+      />
+
+      <ActiveChatRoomIndicator
+        userId={user.type === 'authenticated' ? user.id : undefined}
+        guestId={user.type === 'anonymous' ? user.id : undefined}
       />
     </div>
   )

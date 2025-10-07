@@ -133,9 +133,37 @@ export class MatchingService {
 
   static async leaveQueue(
     userId?: string,
-    guestUserId?: string
+    guestUserId?: string,
+    useSync: boolean = false
   ): Promise<boolean> {
     try {
+      if (useSync && typeof window !== 'undefined') {
+        const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+        const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+        if (!supabaseUrl || !supabaseKey) {
+          console.error('Missing Supabase credentials')
+          return false
+        }
+
+        const xhr = new XMLHttpRequest()
+        xhr.open('POST', `${supabaseUrl}/rest/v1/rpc/leave_waiting_queue`, false)
+        xhr.setRequestHeader('Content-Type', 'application/json')
+        xhr.setRequestHeader('apikey', supabaseKey)
+        xhr.setRequestHeader('Authorization', `Bearer ${supabaseKey}`)
+
+        try {
+          xhr.send(JSON.stringify({
+            p_user_id: userId || null,
+            p_guest_user_id: guestUserId || null
+          }))
+          return xhr.status === 200
+        } catch (e) {
+          console.error('Sync XHR error:', e)
+          return false
+        }
+      }
+
       const { data, error } = await supabase.rpc('leave_waiting_queue', {
         p_user_id: userId || null,
         p_guest_user_id: guestUserId || null
@@ -355,6 +383,33 @@ export class MatchingService {
     } catch (error) {
       console.error('Error in closeChatRoom:', error)
       return false
+    }
+  }
+
+  static async getActiveChatRoom(
+    userId?: string,
+    guestUserId?: string
+  ): Promise<string | null> {
+    try {
+      const { data, error } = await supabase
+        .from('chat_rooms')
+        .select('id')
+        .eq('is_active', true)
+        .or(
+          userId
+            ? `user_id_1.eq.${userId},user_id_2.eq.${userId}`
+            : `guest_id_1.eq.${guestUserId},guest_id_2.eq.${guestUserId}`
+        )
+        .maybeSingle()
+
+      if (error || !data) {
+        return null
+      }
+
+      return data.id
+    } catch (error) {
+      console.error('Error getting active chat room:', error)
+      return null
     }
   }
 

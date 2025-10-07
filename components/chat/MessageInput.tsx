@@ -19,10 +19,10 @@ interface EditingMessage {
 interface MessageInputProps {
   onSendMessage: (content: string, replyToId?: string) => Promise<void>
   onEditMessage?: (messageId: string, newContent: string) => Promise<void>
-  onSkip: () => void
+  onSkip?: () => void
   disabled?: boolean
   skipConfirmMode: boolean
-  onSkipClick: () => void
+  onSkipClick?: () => void
   replyingTo?: ReplyingTo | null
   editingMessage?: EditingMessage | null
   onCancelReply?: () => void
@@ -151,9 +151,9 @@ export default function MessageInput({
   }
 
   const handleSkipButtonClick = () => {
-    if (skipConfirmMode) {
+    if (skipConfirmMode && onSkip) {
       onSkip()
-    } else {
+    } else if (onSkipClick) {
       onSkipClick()
     }
   }
@@ -185,20 +185,22 @@ export default function MessageInput({
 
       <div className="p-3">
         <div className="flex gap-2 items-start">
-          <Button
-            ref={skipButtonRef}
-            data-skip-button
-            onClick={handleSkipButtonClick}
-            disabled={disabled}
-            variant={skipConfirmMode ? "destructive" : "outline"}
-            className={skipConfirmMode
-              ? "bg-red-600 hover:bg-red-700 text-white h-9 px-4 font-medium flex-shrink-0"
-              : "border-red-300 text-red-600 hover:bg-red-50 hover:text-red-700 hover:border-red-400 h-9 px-4 flex-shrink-0"
-            }
-            title={skipConfirmMode ? "Click again to confirm skip" : "Skip and find new chat partner"}
-          >
-            {skipConfirmMode ? "Confirm?" : "Skip"}
-          </Button>
+          {onSkip && (
+            <Button
+              ref={skipButtonRef}
+              data-skip-button
+              onClick={handleSkipButtonClick}
+              disabled={disabled}
+              variant={skipConfirmMode ? "destructive" : "outline"}
+              className={skipConfirmMode
+                ? "bg-red-600 hover:bg-red-700 text-white h-9 px-4 font-medium flex-shrink-0"
+                : "border-red-300 text-red-600 hover:bg-red-50 hover:text-red-700 hover:border-red-400 h-9 px-4 flex-shrink-0"
+              }
+              title={skipConfirmMode ? "Click again to confirm skip" : "Skip and find new chat partner"}
+            >
+              {skipConfirmMode ? "Confirm?" : "Skip"}
+            </Button>
+          )}
           <Textarea
             ref={inputRef}
             value={message}
