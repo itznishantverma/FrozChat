@@ -6,6 +6,8 @@ import ChatWindow from '@/components/chat/ChatWindow'
 import AuthModal from '@/components/AuthModal'
 import { supabase } from '@/lib/supabase'
 import { Snowflake } from 'lucide-react'
+import FriendsSidebar from '@/components/FriendsSidebar'
+import FriendRequestNotification from '@/components/FriendRequestNotification'
 
 export default function FriendChatPage() {
   const params = useParams()
@@ -17,6 +19,7 @@ export default function FriendChatPage() {
   const [partnerUser, setPartnerUser] = useState<any>(null)
   const [showAuthModal, setShowAuthModal] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [roomClosed, setRoomClosed] = useState(false)
 
   useEffect(() => {
     validateAndLoadChat()
@@ -33,6 +36,7 @@ export default function FriendChatPage() {
       }
 
       const sessionData = JSON.parse(existingSession)
+
       let user: any = null
 
       if (sessionData.type === 'anonymous') {
@@ -82,21 +86,25 @@ export default function FriendChatPage() {
         .from('chat_rooms')
         .select('*')
         .eq('id', roomId)
+        .eq('room_type', 'friend')
         .maybeSingle()
 
       if (roomError || !room) {
-        setError('Chat room not found')
+        setError('Friend chat room not found')
         setLoading(false)
         return
       }
 
-      if (room.room_type !== 'friend') {
-        setError('This is not a friend chat room')
-        setTimeout(() => {
-          router.push('/chat/new')
-        }, 2000)
+      const isTemporaryClosed = room.is_temporary_closure && room.closed_at
+
+      if (room.closed_at && !isTemporaryClosed) {
+        setError('This friend chat has been closed')
         setLoading(false)
         return
+      }
+
+      if (isTemporaryClosed) {
+        setRoomClosed(true)
       }
 
       let partner: any = null
@@ -110,7 +118,7 @@ export default function FriendChatPage() {
       )
 
       if (!isParticipant) {
-        setError('You are not authorized to access this chat room')
+        setError('You are not authorized to access this friend chat')
         setTimeout(() => {
           router.push('/chat/new')
         }, 2000)
@@ -126,10 +134,8 @@ export default function FriendChatPage() {
           .maybeSingle()
 
         partner = profile ? {
-          id: profile.id,
           username: profile.username,
-          display_name: profile.display_name || profile.username,
-          type: 'authenticated'
+          display_name: profile.display_name || profile.username
         } : null
       } else if (room.user_id_2 && room.user_id_2 !== currentUserId) {
         const { data: profile } = await supabase
@@ -139,10 +145,8 @@ export default function FriendChatPage() {
           .maybeSingle()
 
         partner = profile ? {
-          id: profile.id,
           username: profile.username,
-          display_name: profile.display_name || profile.username,
-          type: 'authenticated'
+          display_name: profile.display_name || profile.username
         } : null
       } else if (room.guest_id_1 && room.guest_id_1 !== currentGuestId) {
         const { data: guestProfile } = await supabase
@@ -152,10 +156,8 @@ export default function FriendChatPage() {
           .maybeSingle()
 
         partner = guestProfile ? {
-          id: guestProfile.id,
           username: guestProfile.username,
-          display_name: guestProfile.display_name || guestProfile.username,
-          type: 'anonymous'
+          display_name: guestProfile.display_name || guestProfile.username
         } : null
       } else if (room.guest_id_2 && room.guest_id_2 !== currentGuestId) {
         const { data: guestProfile } = await supabase
@@ -165,10 +167,8 @@ export default function FriendChatPage() {
           .maybeSingle()
 
         partner = guestProfile ? {
-          id: guestProfile.id,
           username: guestProfile.username,
-          display_name: guestProfile.display_name || guestProfile.username,
-          type: 'anonymous'
+          display_name: guestProfile.display_name || guestProfile.username
         } : null
       }
 
@@ -237,6 +237,8 @@ export default function FriendChatPage() {
       roomId={roomId}
       currentUser={currentUser}
       partnerUser={partnerUser}
+      isFriendChat={true}
+      isTemporarilyClosed={roomClosed}
     />
   )
 }

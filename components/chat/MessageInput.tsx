@@ -19,14 +19,15 @@ interface EditingMessage {
 interface MessageInputProps {
   onSendMessage: (content: string, replyToId?: string) => Promise<void>
   onEditMessage?: (messageId: string, newContent: string) => Promise<void>
-  onSkip?: () => void
+  onSkip: () => void
   disabled?: boolean
   skipConfirmMode: boolean
-  onSkipClick?: () => void
+  onSkipClick: () => void
   replyingTo?: ReplyingTo | null
   editingMessage?: EditingMessage | null
   onCancelReply?: () => void
   onCancelEdit?: () => void
+  disableSkip?: boolean
 }
 
 export default function MessageInput({
@@ -39,7 +40,8 @@ export default function MessageInput({
   replyingTo,
   editingMessage,
   onCancelReply,
-  onCancelEdit
+  onCancelEdit,
+  disableSkip = false
 }: MessageInputProps) {
   const [message, setMessage] = useState('')
   const [sending, setSending] = useState(false)
@@ -151,9 +153,9 @@ export default function MessageInput({
   }
 
   const handleSkipButtonClick = () => {
-    if (skipConfirmMode && onSkip) {
+    if (skipConfirmMode) {
       onSkip()
-    } else if (onSkipClick) {
+    } else {
       onSkipClick()
     }
   }
@@ -185,7 +187,7 @@ export default function MessageInput({
 
       <div className="p-3">
         <div className="flex gap-2 items-start">
-          {onSkip && (
+          {!disableSkip && (
             <Button
               ref={skipButtonRef}
               data-skip-button

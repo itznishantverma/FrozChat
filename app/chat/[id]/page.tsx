@@ -132,10 +132,8 @@ export default function ChatPage() {
 
         console.log('Fetched user_id_1 profile (all fields):', profile, profileError)
         partner = profile ? {
-          id: profile.id,
           username: profile.username,
-          display_name: profile.display_name || profile.username,
-          type: 'authenticated'
+          display_name: profile.display_name || profile.username
         } : null
       } else if (room.user_id_2 && room.user_id_2 !== currentUserId) {
         const { data: profile, error: profileError } = await supabase
@@ -146,10 +144,8 @@ export default function ChatPage() {
 
         console.log('Fetched user_id_2 profile (all fields):', profile, profileError)
         partner = profile ? {
-          id: profile.id,
           username: profile.username,
-          display_name: profile.display_name || profile.username,
-          type: 'authenticated'
+          display_name: profile.display_name || profile.username
         } : null
       } else if (room.guest_id_1 && room.guest_id_1 !== currentGuestId) {
         const { data: guestProfile, error: guestError } = await supabase
@@ -160,10 +156,8 @@ export default function ChatPage() {
 
         console.log('Fetched guest_id_1 (all fields):', guestProfile, guestError)
         partner = guestProfile ? {
-          id: guestProfile.id,
           username: guestProfile.username,
-          display_name: guestProfile.display_name || guestProfile.username,
-          type: 'anonymous'
+          display_name: guestProfile.display_name || guestProfile.username
         } : null
       } else if (room.guest_id_2 && room.guest_id_2 !== currentGuestId) {
         const { data: guestProfile, error: guestError } = await supabase
@@ -174,10 +168,8 @@ export default function ChatPage() {
 
         console.log('Fetched guest_id_2 (all fields):', guestProfile, guestError)
         partner = guestProfile ? {
-          id: guestProfile.id,
           username: guestProfile.username,
-          display_name: guestProfile.display_name || guestProfile.username,
-          type: 'anonymous'
+          display_name: guestProfile.display_name || guestProfile.username
         } : null
       }
 
